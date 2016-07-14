@@ -1,0 +1,306 @@
+ARM GAS  launch_os.s 			page 1
+
+
+   1              	   .cpu cortex-m3
+   2              	   .section .text
+   3              	   .code 16
+   4              	   .syntax unified
+   5              	 
+   6              	  /* External references */
+   7              	
+   8              	  .extern   current_running_task
+   9              	  .extern   next_task_to_run
+  10              	  .extern   system_state
+  11              	 
+  12              	  /* Public functions declared in this file */
+  13              	
+  14              	  .global  switch_context_exit
+  15              	  .global  switch_context
+  16              	  .global  cpu_save_sr
+  17              	  .global  cpu_restore_sr
+  18              	  .global  launch_os
+  19              	  .global  chk_irq_disabled
+  20              	  .global  PendSV_Handler
+  21              	  .global  int_exit
+  22              	  .global  ffs_asm
+  23              	  
+  24              	  .global  arm_disable_interrupt
+  25              	  .global  arm_enable_interrupt
+  26              	
+  27              	 
+  28              	
+  29              	
+  30              	
+  31              	 /*  Interrupt Control State Register Address */
+  32              	
+  33              	  .equ ICSR_ADDR,   0xE000ED04
+  34              	
+  35              	 /*  pendSV bit in the Interrupt Control State Register */
+  36              	
+  37              	  .equ PENDSVSET,   0x10000000
+  38              	
+  39              	 /*  System Handlers 12-15 Priority Register Address */
+  40              	
+  41              	  .equ PR_12_15_ADDR,  0xE000ED20
+  42              	
+  43              	 /*  PRI_14 (PendSV) priority in the System Handlers 12-15 Priority Register Address
+  44              	     PendSV priority is minimal (0xFF)
+  45              	 */
+  46              	
+  47              	  .equ PENDS_VPRIORITY,  0x00FF0000
+  48              	
+  49              	/*----------------------------------------------------------------------------*
+  50              	/* Interrups not yet enabled */
+  51              	/*--------------------------------------------------------------------------- */
+  52              	 .thumb_func
+  53              	
+  54              	launch_os:
+  55              	       //cpsid   I
+  56              	
+  57              	
+ARM GAS  launch_os.s 			page 2
+
+
+  58 0000 3049     	       ldr    r1, =PR_12_15_ADDR        /* Load the System 12-15 Priority Register */
+  59 0002 0868     	       ldr    r0, [r1]
+  60 0004 40F47F00 	       orr    r0, r0, #PENDS_VPRIORITY  /*  set PRI_14 (PendSV) to 0xFF - minimal */
+  61 0008 0860     	       str    r0, [r1]
+  62              	
+  63 000a 2F49     	       ldr    r1, =system_state      /*  Indicate that system has started */
+  64 000c 4FF00100 	       mov    r0, #1                    /*  1 -> SYS_STATE_RUNNING */
+  65 0010 0870     	       strb   r0, [r1]
+  66              	
+  67              	  /*---------------*/
+  68              	
+  69 0012 2E49     	       ldr    r1, =current_running_task     /*  =next_task_to_run */
+  70 0014 0A68     	       ldr    r2, [r1]
+  71 0016 1068     	       ldr    r0, [r2]                  /*  in r0 - new task SP */
+  72              	
+  73 0018 B0E8F00F 	       ldmia  r0!, {r4-r11}
+  74 001c 80F30988 	       msr    psp, r0
+  75 0020 4EF0040E 	       orr    lr, lr, #0x04             /*  Force to new process PSP */
+  76              	
+  77              	/* switch_context_exit: */
+  78              	
+  79 0024 2A49     	       ldr    r1, =ICSR_ADDR            /*  Trigger PendSV exception */
+  80 0026 2B48     	       ldr    r0, =PENDSVSET
+  81 0028 0860     	       str    r0, [r1]
+  82              	       //bx     lr
+  83 002a 62B6     	       cpsie  I                         /*  Enable core interrupts */
+  84              	
+  85              	  /* - Never reach this  */
+  86 002c 7047     	       bx     lr
+  87 002e FEE7     	       b  .
+  88              	    /*  bx lr */
+  89              	
+  90              	
+  91              	/* ------------------------------------------------------------------------ */
+  92              	  .thumb_func
+  93              	
+  94              	switch_context_exit:
+  95              	
+  96              	    
+  97              	
+  98              	  /*  At the interrupt request below, the PSP will be used to
+  99              	     store manually saved 8 registers (r4-r11) */
+ 100              	
+ 101 0030 2649     	       ldr    r1,  =current_running_task
+ 102 0032 0A68     	       ldr    r2,  [r1]
+ 103 0034 1068     	       ldr    r0,  [r2]       /* in r0 - current_running_task stack */
+ 104              	
+ 105              	  /*  Preset PSP stack */
+ 106              	
+ 107 0036 00F12000 	       add    r0,  r0, #32    /* 8*4 - 8 manually saved registers */
+ 108 003a 80F30988 	       msr    psp, r0
+ 109              	
+ 110              	  /*  At the interrupt request below, the MSP will be used
+ 111              	      to store automaticaly saved 8 registers */
+ 112              	
+ 113              	  /* Preset MSP stack */
+ 114              	
+ARM GAS  launch_os.s 			page 3
+
+
+ 115 003e EFF30880 	       mrs    r0,  msp
+ 116 0042 2030     	       adds   r0,  r0, #32   /* 8*4 - 8 automatically saved registers at the PendSV interrupt */
+ 117 0044 80F30888 	       msr    msp, r0
+ 118              	
+ 119 0048 4FF00000 	       mov    r0,  #0        /* Default stack MSP(Main stack pointer) is used */
+ 120 004c 80F31488 	       msr    control, r0
+ 121              	
+ 122              	  /* ------------------------------- */
+ 123              	
+ 124 0050 1F49     	      ldr    r1,  =ICSR_ADDR           /*  Trigger PendSV exception */
+ 125 0052 2048     	      ldr    r0,  =PENDSVSET
+ 126 0054 0860     	      str    r0,  [r1]
+ 127              	
+ 128 0056 62B6     	      cpsie  I                         /*  Enable core interrupts */
+ 129              	
+ 130              	  /* - Should never reach  */
+ 131              	
+ 132 0058 FEE7     	       b  .
+ 133              	
+ 134              	
+ 135              	/* ------------------------------------------------------------------------ */
+ 136              	
+ 137              	    .thumb_func
+ 138              	
+ 139              	PendSV_Handler:
+ 140              	
+ 141 005a 72B6     	       cpsid  I                         //Disable core interruption
+ 142              	
+ 143              		//First we compare the next_task_to_run pointer to the current_running task pointer
+ 144 005c 1B4B     	       ldr    r3, =current_running_task          
+ 145 005e 1968     	       ldr    r1, [r3]                      
+ 146 0060 1D4A     	       ldr    r2, =next_task_to_run
+ 147 0062 1268     	       ldr    r2, [r2]                       
+ 148 0064 9142     	       cmp    r1, r2						//If next task to run and current task are the save there is nothing ot d
+ 149 0066 0CD0     	       beq    exit_context_switch
+ 150              	
+ 151              	
+ 152              	
+ 153 0068 EFF30980 	       mrs    r0, psp                   //Moves PSP to R0
+ 154 006c 20E9F00F 	       stmdb  r0!, {r4-r11}				//Save registers of current running task to stack (non pushed by NVI
+ 155              	
+ 156 0070 0860     	       str    r0, [r1]                  //Saves SP to Task Structure (TCB) (in r1 address of curren
+ 157 0072 1A60     	       str    r2, [r3]                  //In r3 address of current_running task, current_running_ta
+ 158 0074 1068     	       ldr    r0, [r2]                  //r2 contains new SP
+ 159              	
+ 160 0076 B0E8F00F 	       ldmia  r0!, {r4-r11}				//Restore previously saved registers (of new task)
+ 161 007a 80F30988 	       msr    psp, r0					//Moves RO to PSP
+ 162 007e 4EF0040E 	       orr    lr, lr, #0x04             //lr <- lr | 0x04; forces to use PSP on return of interrupt
+ 163              	
+ 164              	
+ 165              	
+ 166              	exit_context_switch:
+ 167              	
+ 168 0082 62B6     	       cpsie  I                         //Enable core interruption
+ 169              	
+ 170 0084 7047     	       bx     lr
+ 171              	
+ARM GAS  launch_os.s 			page 4
+
+
+ 172              	/* ------------------------------------------------------------------------ */
+ 173              	  .thumb_func
+ 174              	
+ 175              	switch_context:
+ 176              	
+ 177              	     /* -  Just Invoke PendSV exception   */
+ 178              	
+ 179 0086 1249     	       ldr    r1, =ICSR_ADDR
+ 180 0088 1248     	       ldr    r0, =PENDSVSET
+ 181 008a 0860     	       str    r0, [r1]
+ 182              	
+ 183 008c 7047     	       bx     lr
+ 184              	
+ 185              	/* ------------------------------------------------------------------------ */
+ 186              	  .thumb_func
+ 187              	
+ 188              	int_exit:
+ 189              	
+ 190 008e 1049     	       ldr    r1, =ICSR_ADDR            /*  Invoke PendSV exception  */
+ 191 0090 1048     	       ldr    r0, =PENDSVSET
+ 192 0092 0860     	       str    r0, [r1]
+ 193              	
+ 194 0094 7047     	       bx     lr
+ 195              	
+ 196              	/* ------------------------------------------------------------------------ */
+ 197              	  .thumb_func
+ 198              	
+ 199              	cpu_save_sr:
+ 200              	
+ 201 0096 EFF31080 	       mrs    r0, primask
+ 202 009a 72B6     	       cpsid  I
+ 203 009c 7047     	       bx     lr
+ 204              	
+ 205              	/* ------------------------------------------------------------------------ */
+ 206              	  .thumb_func
+ 207              	
+ 208              	cpu_restore_sr:
+ 209              	
+ 210 009e 80F31088 	       msr    primask, r0
+ 211 00a2 7047     	       bx     lr
+ 212              	
+ 213              	/* ------------------------------------------------------------------------ */
+ 214              	  .thumb_func
+ 215              	
+ 216              	chk_irq_disabled:
+ 217              	
+ 218 00a4 EFF31080 	       mrs    r0, primask
+ 219 00a8 7047     	       bx     lr
+ 220              	
+ 221              	/* ------------------------------------------------------------------------ */
+ 222              	  .thumb_func
+ 223              	
+ 224              	ffs_asm:
+ 225              	
+ 226 00aa 0146     	       mov    r1, r0                    /*  tmp = in  */
+ 227 00ac 4842     	       rsbs   r0, r1, #0                /*  in = -in  */
+ 228 00ae 0840     	       ands   r0, r0, r1                /*  in = in & tmp  */
+ARM GAS  launch_os.s 			page 5
+
+
+ 229 00b0 B0FA80F0 	       CLZ.W  r0, r0
+ 230 00b4 C0F12000 	       rsb    r0, r0, #0x20             /*  32 - in */
+ 231              	
+ 232 00b8 7047     	       bx     lr
+ 233              	
+ 234              	/* ------------------------------------------------------------------------ */
+ 235              	/* ------------------------------------------------------------------------ */
+ 236              	/* ------------------------------------------------------------------------ */
+ 237              	/* ------------------------------------------------------------------------ */
+ 238              	/* ------------------------------------------------------------------------ */
+ 239              	
+ 240              	/* ------------------------------------------------------------------------- */
+ 241              	  .thumb_func
+ 242              	
+ 243              	arm_disable_interrupt:
+ 244              	
+ 245 00ba 72B6     	     cpsid  I
+ 246 00bc 7047     	     bx     lr
+ 247              	
+ 248              	
+ 249              	/* ------------------------------------------------------------------------- */
+ 250              	  .thumb_func
+ 251              	
+ 252              	arm_enable_interrupt:
+ 253              	
+ 254 00be 62B6     	     cpsie I
+ 255 00c0 7047     	     bx   lr
+ 256              	
+ 257              	    
+ 258              	
+ 259 00c2 000020ED 	  .end
+ 259      00E00000 
+ 259      00000000 
+ 259      000004ED 
+ 259      00E00000 
+ARM GAS  launch_os.s 			page 6
+
+
+DEFINED SYMBOLS
+         launch_os.s:94     .text:00000030 switch_context_exit
+         launch_os.s:175    .text:00000086 switch_context
+         launch_os.s:199    .text:00000096 cpu_save_sr
+         launch_os.s:208    .text:0000009e cpu_restore_sr
+         launch_os.s:54     .text:00000000 launch_os
+         launch_os.s:216    .text:000000a4 chk_irq_disabled
+         launch_os.s:139    .text:0000005a PendSV_Handler
+         launch_os.s:188    .text:0000008e int_exit
+         launch_os.s:224    .text:000000aa ffs_asm
+         launch_os.s:243    .text:000000ba arm_disable_interrupt
+         launch_os.s:252    .text:000000be arm_enable_interrupt
+         launch_os.s:33     *ABS*:e000ed04 ICSR_ADDR
+         launch_os.s:37     *ABS*:10000000 PENDSVSET
+         launch_os.s:41     *ABS*:e000ed20 PR_12_15_ADDR
+         launch_os.s:47     *ABS*:00ff0000 PENDS_VPRIORITY
+         launch_os.s:58     .text:00000000 $t
+         launch_os.s:166    .text:00000082 exit_context_switch
+         launch_os.s:259    .text:000000c2 $d
+                   .debug_aranges:0000000c $d
+
+UNDEFINED SYMBOLS
+system_state
+current_running_task
+next_task_to_run
